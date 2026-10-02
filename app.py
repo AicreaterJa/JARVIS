@@ -274,6 +274,12 @@ REGISTRY = {name: fn for name, fn, _ in _TOOLS}
 SCHEMAS = [schema for _, _, schema in _TOOLS]
 
 
+def fix_latex(text: str) -> str:
+    """Streamlit only renders $...$ and $$...$$, so convert \\( \\) and \\[ \\] automatically."""
+    text = re.sub(r"\\\[(.+?)\\\]", lambda m: f"\n\n$${m.group(1).strip()}$$\n\n", text, flags=re.S)
+    return re.sub(r"\\\((.+?)\\\)", lambda m: f"${m.group(1).strip()}$", text, flags=re.S)
+
+
 def run_tool(name: str, args: dict) -> str:
     try:
         return str(REGISTRY[name](**args))[:MAX_TOOL_CHARS]
@@ -314,7 +320,7 @@ class Jarvis:
                 if not msg.tool_calls:
                     if status:
                         status.update(label=f"🛠️ Used {calls} tool call(s)", state="complete")
-                    yield msg.content or "Sir, I could not produce an answer. Please rephrase."
+                    yield fix_latex(msg.content or "Sir, I could not produce an answer. Please rephrase.")
                     return
 
                 rounds += 1
