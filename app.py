@@ -22,6 +22,8 @@ MAX_HISTORY_MESSAGES = 12      # 12 messages = 6 full turns (old code kept only 
 MAX_WEB_RESULTS = 4
 REQUEST_TIMEOUT_SEC = 5
 WEB_CACHE_TTL_SEC = 300        # repeat searches within 5 min are instant
+DEFAULT_ROUTER_MODEL = "openai/gpt-oss-20b"    # fast + cheap, decides if web search is needed
+DEFAULT_CORE_MODEL = "openai/gpt-oss-120b"     # main brain
 ERROR_PREFIX = "Sir, I encountered a critical system error"
 
 HEADERS = {"User-Agent": "JarvisApp/1.0 (personal Streamlit assistant)"}
@@ -99,6 +101,11 @@ def fetch_web_data(query: str) -> str:
     return "\n\n".join(sections)
 
 
+def _effort(model: str) -> dict:
+    """gpt-oss models are reasoning models; 'low' keeps replies fast."""
+    return {"reasoning_effort": "low"} if "gpt-oss" in model else {}
+
+
 # ==========================================
 # ENGINE
 # ==========================================
@@ -119,8 +126,9 @@ class Jarvis:
                     {"role": "user", "content": f"Recent conversation:\n{recent}\n\nLatest message: {query}"},
                 ],
                 temperature=0,
-                max_tokens=60,
+                max_tokens=400,  # reasoning tokens count too, so don't set this tiny
                 response_format={"type": "json_object"},
+                extra_body=_effort(self.router_model),
             )
             data = json.loads(res.choices[0].message.content)
             search_query = str(data.get("query", "")).strip()
@@ -149,7 +157,8 @@ class Jarvis:
         try:
             stream = self.client.chat.completions.create(
                 model=self.core_model, messages=messages,
-                temperature=0.6, max_tokens=2048, stream=True,
+                temperature=0.6, max_tokens=4096, stream=True,
+                extra_body=_effort(self.core_model),
             )
             for chunk in stream:
                 if chunk.choices and (delta := chunk.choices[0].delta.content):
@@ -170,8 +179,8 @@ st.markdown("<style>.stApp { background-color: #050505; color: #00FFCC; }</style
 def get_jarvis() -> Jarvis:
     return Jarvis(
         api_key=st.secrets["GROQ_API_KEY"],
-        router_model=st.secrets.get("ROUTER_MODEL", "llama-3.1-8b-instant"),
-        core_model=st.secrets.get("CORE_MODEL", "llama-3.3-70b-versatile"),
+        router_model=st.secrets.get("ROUTER_MODEL", DEFAULT_ROUTER_MODEL),
+        core_model=st.secrets.get("CORE_MODEL", DEFAULT_CORE_MODEL),
     )
 
 
