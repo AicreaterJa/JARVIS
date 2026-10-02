@@ -1,3 +1,5 @@
-streamlit
-groq
-requests
+   streamlit>=1.50
+   groq
+   requests
+   defusedxml
+pip install -U -r requirements.txt
