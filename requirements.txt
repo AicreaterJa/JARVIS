@@ -1,4 +1,7 @@
-streamlit
-groq
-requests
-defusedxml
+   streamlit>=1.50
+   groq
+   requests
+   defusedxml
+   sympy
+   scipy
+   tzdata
