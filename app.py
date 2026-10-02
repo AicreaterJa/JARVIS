@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import socket
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime
@@ -16,7 +17,7 @@ import requests
 import streamlit as st
 import sympy as sp
 from defusedxml import ElementTree as ET
-from groq import BadRequestError, Groq, GroqError
+from groq import BadRequestError, Groq, GroqError, RateLimitError
 from scipy import constants as sci_const
 from sympy.parsing.sympy_parser import (
     convert_xor, implicit_multiplication_application, parse_expr, standard_transformations,
@@ -28,14 +29,16 @@ log = logging.getLogger("jarvis")
 # CONFIG
 # ==========================================
 DEFAULT_MODEL = "openai/gpt-oss-120b"
-MAX_HISTORY_MESSAGES = 12
+MAX_HISTORY_MESSAGES = 8       # fewer old messages = fewer tokens per request
+MAX_HISTORY_CHARS = 1500       # long old answers are trimmed when re-sent
+MAX_RATE_RETRIES = 4           # automatic waits when Groq says 'too many tokens per minute'
 MAX_TOOL_ROUNDS = 8            # how many tool-use rounds Jarvis may chain per question
 HTTP_TIMEOUT = 8
 TOOL_TIMEOUT = 25              # seconds for heavy maths
-MAX_TOOL_CHARS = 8000
+MAX_TOOL_CHARS = 4000
 DEFAULT_CITY = "Ludhiana"
 DEFAULT_TZ = "Asia/Kolkata"
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
 ERROR_PREFIX = "Sir, I encountered a critical system error"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; JarvisApp/2.0)"}
 
@@ -304,16 +307,16 @@ def run_tool(name: str, args: dict) -> str:
 # ==========================================
 class Jarvis:
     def __init__(self, api_key: str, model: str):
-        self.client = Groq(api_key=api_key, timeout=60, max_retries=2)
+        self.client = Groq(api_key=api_key, timeout=60, max_retries=1)
         self.model = model
 
     def stream_reply(self, query: str, history: list[dict]) -> Iterator[str]:
         now = datetime.now(ZoneInfo(DEFAULT_TZ)).strftime("%A, %d %B %Y, %I:%M %p IST")
         messages = [{"role": "system", "content": SYSTEM_PROMPT.format(now=now)}]
-        messages += [{"role": m["role"], "content": m["content"]} for m in history[-MAX_HISTORY_MESSAGES:]]
+        messages += [{"role": m["role"], "content": m["content"][:MAX_HISTORY_CHARS]} for m in history[-MAX_HISTORY_MESSAGES:]]
         messages.append({"role": "user", "content": query})
 
-        status, calls, rounds, retries = None, 0, 0, 0
+        status, calls, rounds, retries, rl_retries = None, 0, 0, 0, 0
         try:
             while True:
                 kwargs = dict(model=self.model, messages=messages, temperature=0.4, max_tokens=8192,
@@ -327,6 +330,17 @@ class Jarvis:
                         retries += 1
                         continue
                     raise
+                except RateLimitError as exc:  # free plan: tokens per minute. Wait as Groq asks, then retry
+                    if rl_retries >= MAX_RATE_RETRIES:
+                        raise
+                    rl_retries += 1
+                    found = re.search(r"try again in ([\d.]+)(ms|s)", str(exc))
+                    wait = (float(found.group(1)) / (1000 if found and found.group(2) == "ms" else 1)) if found else 8.0
+                    wait = min(wait + 1.0, 30.0)
+                    status = status or st.status("🛠️ Working...", expanded=False)
+                    status.write(f"⏳ Token limit reached, retrying in {wait:.0f}s")
+                    time.sleep(wait)
+                    continue
 
                 if not msg.tool_calls:
                     if status:
@@ -349,6 +363,9 @@ class Jarvis:
                     calls += 1
                     messages.append({"role": "tool", "tool_call_id": tc.id,
                                      "content": run_tool(tc.function.name, args)})
+        except RateLimitError:
+            yield (f"{ERROR_PREFIX}: the Groq free-plan token limit is still full. "
+                   "Please wait about a minute and ask again.")
         except GroqError as exc:
             log.error("Groq failed: %s", exc)
             yield f"{ERROR_PREFIX}: {exc}"
