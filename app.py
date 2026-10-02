@@ -35,6 +35,7 @@ TOOL_TIMEOUT = 25              # seconds for heavy maths
 MAX_TOOL_CHARS = 8000
 DEFAULT_CITY = "Ludhiana"
 DEFAULT_TZ = "Asia/Kolkata"
+APP_VERSION = "2.3"
 ERROR_PREFIX = "Sir, I encountered a critical system error"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; JarvisApp/2.0)"}
 
@@ -275,9 +276,19 @@ SCHEMAS = [schema for _, _, schema in _TOOLS]
 
 
 def fix_latex(text: str) -> str:
-    """Streamlit only renders $...$ and $$...$$, so convert \\( \\) and \\[ \\] automatically."""
-    text = re.sub(r"\\\[(.+?)\\\]", lambda m: f"\n\n$${m.group(1).strip()}$$\n\n", text, flags=re.S)
-    return re.sub(r"\\\((.+?)\\\)", lambda m: f"${m.group(1).strip()}$", text, flags=re.S)
+    """Streamlit only renders $...$ and $$...$$. Convert other maths delimiters the model may use."""
+    block = lambda m: f"\n\n$${m.group(1).strip()}$$\n\n"
+    inline = lambda m: f"${m.group(1).strip()}$"
+    text = re.sub(r"\\\[(.+?)\\\]", block, text, flags=re.S)       # \[ ... \]
+    text = re.sub(r"\\\((.+?)\\\)", inline, text, flags=re.S)      # \( ... \)
+    # Fallback: models sometimes drop the backslashes, leaving bare [ ... ] and ( \cmd ... ).
+    # Only touch text outside existing $...$ maths, and only when it clearly contains LaTeX.
+    parts = re.split(r"(\$\$.+?\$\$|\$[^$\n]+\$)", text, flags=re.S)
+    for i in range(0, len(parts), 2):
+        parts[i] = re.sub(r"(?ms)^[ \t]*\[[ \t]+(.+?)[ \t]+\][ \t]*$",
+                          lambda m: block(m) if re.search(r"\\[A-Za-z]|\^|_\{", m.group(1)) else m.group(0), parts[i])
+        parts[i] = re.sub(r"\(\s*([^()\n]*\\[A-Za-z]+[^()\n]*?)\s*\)", inline, parts[i])
+    return "".join(parts)
 
 
 def run_tool(name: str, args: dict) -> str:
@@ -368,6 +379,7 @@ with st.sidebar:
     st.divider()
     st.write(f"**🧠 Core Engine:** `{jarvis.model}`")
     st.write(f"**🛠️ Tools online:** `{len(REGISTRY)}`")
+    st.write(f"**📦 App version:** `{APP_VERSION}`")
     st.caption("Maths, physics constants, weather, time, stocks, crypto, forex, web search, page reader")
     st.divider()
     st.subheader("Memory Management")
